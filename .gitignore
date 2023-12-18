@@ -1,6 +1,6 @@
 # Folders to ignore
 inputs
-# output
+output/*
 code/.idea
 .git
 #inputs/cityscapes/gtFine_trainvaltest
@@ -15,3 +15,8 @@ __pycache__/
 *.py[cod]
 dist/
 seggradcam.egg-info/
+
+*.png
+*.npy
+*.ipynb
+*.h5
