@@ -1,0 +1,4 @@
+#Hago uso de un contenedor de Vitis-AI antiguo que tenía (xilinx/vitis-ai-cpu:2.5)
+#Activo el entorno de TF2 (Sí, TF2).
+
+
