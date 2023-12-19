@@ -123,13 +123,13 @@ class SegGradCAMplot(SegGradCAM):
             roi_contour1 = classroi.roi
         else:
             roi_contour1 = self.roi.roi
-        plt.contour(X, Y, roi_contour1, colors='pink')
+        #plt.contour(X, Y, roi_contour1, colors='pink')
 
         plt.title(title1, fontsize=fonts)
         # biased texture contour
         if self.next_dict and self.image_id:
             biasroi = BiasRoI(self.next_dict, self.image_id)
-            plt.contour(X, Y, biasroi.biased_mask, colors='magenta')  # 'black') #'purple')
+            #plt.contour(X, Y, biasroi.biased_mask, colors='magenta')  # 'black') #'purple')
             if biasroi.biased_mask.any() != 0:
                 plt.title(title1bias, fontsize=fonts)
         plt.imshow(self.cam, cmap='jet',  # vmin=0,vmax=1,
