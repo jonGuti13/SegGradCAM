@@ -20,3 +20,4 @@ seggradcam.egg-info/
 *.npy
 *.ipynb
 *.h5
+unet_train_tf2.py
