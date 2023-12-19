@@ -138,10 +138,16 @@ class SegGradCAMplot(SegGradCAM):
         jet.set_label(label="Importance", size=fonts)
         jet.ax.set_yticklabels([0, 0.2, 0.4, 0.6, 0.8, 1], size=fonts)
         if pixel:
-            plt.scatter(self.roi.j, self.roi.i, color='white', s=scatter_size)  # j then i or i,j ?
+            plt.scatter(self.roi.j, self.roi.i, color='black', s=scatter_size)  # j then i or i,j ?
+
+        try:
+            num = self.prop_to_layer.split('_')[1]
+        except:
+            num = '0'
+
 
         plt.savefig(os.path.join(self.outfolder,
-                                 start_save_name + str(self.cls) + '_to_act' + self.prop_to_layer.split('_')[1] +'_'+
+                                 start_save_name + str(self.cls) + '_to_act' + num +'_'+
                                  self.timestr + ".png"))
 
     def explainClass(self):
