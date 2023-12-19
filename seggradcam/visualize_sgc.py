@@ -103,7 +103,7 @@ class SegGradCAMplot(SegGradCAM):
         classes_cmap = plt.get_cmap('Spectral', self.n_classes)
         scale_fig = 2
         fonts = 70
-        scatter_size = 330 * scale_fig
+        scatter_size = 100 * scale_fig
         return classes_cmap, scale_fig, fonts, scatter_size
 
     def explainBase(self, title1, title1bias, start_save_name, pixel=False):
@@ -113,7 +113,7 @@ class SegGradCAMplot(SegGradCAM):
         scatter_size = int(scatter_size / 3)
         plt.figure(figsize=(10 * scale_fig, 5 * scale_fig))
         # plt.axis('off')
-        plt.imshow(self.ximg, vmin=0, vmax=1, cmap=self.cmap_orig)
+        plt.imshow(self.ximg, cmap=self.cmap_orig, alpha = 1)
         # class contour
         X, Y = self.roi.meshgrid()
 
@@ -132,11 +132,12 @@ class SegGradCAMplot(SegGradCAM):
             #plt.contour(X, Y, biasroi.biased_mask, colors='magenta')  # 'black') #'purple')
             if biasroi.biased_mask.any() != 0:
                 plt.title(title1bias, fontsize=fonts)
-        plt.imshow(self.cam, cmap='jet',  # vmin=0,vmax=1,
-                   alpha=0.6)
-        jet = plt.colorbar(fraction=0.046, pad=0.04, ticks=[0, 0.2, 0.4, 0.6, 0.8, 1])
-        jet.set_label(label="Importance", size=fonts)
-        jet.ax.set_yticklabels([0, 0.2, 0.4, 0.6, 0.8, 1], size=fonts)
+        plt.imshow(self.cam, cmap=make_colormap(), alpha=0.6)
+        #plt.clim(-1, 1)
+        mycolorbar = plt.colorbar()
+        #mycolorbar = plt.colorbar(fraction=0.046, pad=0.04, ticks=[-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1])
+        mycolorbar.set_label(label="Importance", size=fonts)
+        #mycolorbar.ax.set_yticklabels([-1, -0.8, -0.6, -0.4, -0.2, 0, 0.2, 0.4, 0.6, 0.8, 1], size=fonts)
         if pixel:
             plt.scatter(self.roi.j, self.roi.i, color='black', s=scatter_size)  # j then i or i,j ?
 
