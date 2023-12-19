@@ -20,9 +20,38 @@ from pathlib import Path
 from .seggradcam import SegGradCAM,BiasRoI, SuperRoI, ClassRoI, PixelRoI
 import numpy as np
 
+from matplotlib.colors import LinearSegmentedColormap
+
+def make_grayscale_colormap():
+    # Define the colors for the negative, zero, and positive values
+    c_neg = 'black'
+    c_pos = 'white'
+
+    # Create a list of tuples containing the position and color for each segment
+    colors = [(0, c_neg), (0.5, 'gray'), (1, c_pos)]
+
+    # Create the colormap using LinearSegmentedColormap
+    cmap = LinearSegmentedColormap.from_list('grayscale_cmap', colors)
+
+    return cmap
+
+def make_colormap():
+    # Define the colors for the negative, zero, and positive values
+    c_neg = 'blue'
+    c_pos = 'red'
+    c_zero = 'white'
+
+    # Create a list of tuples containing the position and color for each segment
+    colors = [(0, c_neg), (0.5, c_zero), (1, c_pos)]
+
+    # Create the colormap using LinearSegmentedColormap
+    cmap = LinearSegmentedColormap.from_list('custom_cmap', colors)
+
+    return cmap
+
 
 class SegGradCAMplot(SegGradCAM):
-    def __init__(self, seggradcam, trainunet=None, next_dict=None, image_id=None, gt=None,
+    def __init__(self, seggradcam, trainunet=None, next_dict=None, image_id=None, gt=None, vis=None,
                 n_classes=None, outfolder=None, model=None):
 
         # SegGradCAM.__init__(self, seggradcam) #, trainparam) #?
@@ -42,7 +71,7 @@ class SegGradCAMplot(SegGradCAM):
         self.A = seggradcam.A  # A, feature maps from the intermediate prop_to_layer
         self.grads_val = seggradcam.grads_val  # gradients of the logits y with respect to all pixels of each feature map 𝐴^𝑘
         self.cam = seggradcam.cam
-        
+
         if trainunet!=None:
             self.n_classes = trainunet.trainparam.n_classes
             self.outfolder = str(trainunet.trainparam.outfolder)
@@ -56,15 +85,16 @@ class SegGradCAMplot(SegGradCAM):
         self.next_dict = next_dict
         self.image_id = image_id
         self.gt = gt
+        self.vis = vis
 
         timestamp = datetime.now()
         self.timestr = timestamp.strftime("%m%d%H%M")
         # different for cityscapes&mnist ?
         if self.image.shape[-1] == 1:
-            self.ximg = self.image[..., 0]
+            self.ximg = self.vis
             self.cmap_orig = 'gray'
         else:
-            self.ximg = self.image
+            self.ximg = self.vis
             self.cmap_orig = None
 
             # gt, predictions?
