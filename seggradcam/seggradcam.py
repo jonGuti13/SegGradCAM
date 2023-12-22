@@ -15,10 +15,10 @@ class SuperRoI:  # or rename it to ClassRoI
         self.j = None
 
     def setRoIij(self):
-        print("Shape of RoI: ", self.roi.shape)
+        #print("Shape of RoI: ", self.roi.shape)
         self.i = np.where(self.roi == 1)[0]
         self.j = np.where(self.roi == 1)[1]
-        print("Lengths of i and j index lists:", len(self.i), len(self.j))
+        #print("Lengths of i and j index lists:", len(self.i), len(self.j))
 
     def meshgrid(self):
         # mesh for contour
@@ -32,7 +32,8 @@ class ClassRoI(SuperRoI):
         preds = model.predict(np.expand_dims(image, 0))[0]
         max_preds = preds.argmax(axis=-1)
         self.image = image
-        self.roi = np.round(preds[..., cls] * (max_preds == cls)).reshape(image.shape[-3], image.shape[-2])
+        #self.roi = np.round(preds[..., cls] * (max_preds == cls)).reshape(image.shape[-3], image.shape[-2])
+        self.roi = max_preds == cls
         self.fullroi = self.roi
         self.setRoIij()
 
@@ -165,40 +166,97 @@ class SegGradCAM:
         #print("y_c: ", type(y_c), np.array(y_c))
         conv_output = self.input_model.get_layer(self.prop_to_layer).output
         #print("conv_output: ", type(conv_output), np.array(conv_output))
-        grads = K.gradients(y_c, conv_output)[0]
-        #print("grads: ", type(grads), grads)
+        input_output = self.input_model.get_layer("input_1").output
+
+        #Calcula el gradiente de la salida (solo para los píxeles seleccionados) con
+        #respecto a la salida de una convolución (conv_output) o con respecto a la
+        #entrada (input_output)
+
+        grads_wrt_conv_output = K.gradients(y_c, conv_output)[0]
+        #print("grads: ", type(grads_wrt_conv_output), grads_wrt_conv_output)
+        grads_wrt_input_output = K.gradients(y_c, input_output)[0]
+
+        #El gradiente con respecto a la entrada es lo que se conoce precisamente como
+        #effective receptive field. Para hacer un promedio es mejor seleccionar una
+        #posición fija de la imagen (un píxel), calcular el gradiente y almacenarlo.
 
         # Normalize if necessary
         # grads = normalize(grads)
-        gradient_function = K.function([self.input_model.input], [conv_output, grads])
-        output, grads_val = gradient_function([preprocessed_input])
-        self.A, self.grads_val = output[0, :], grads_val[0, :, :, :]
+        gradient_function_grads = K.function([self.input_model.input], [grads_wrt_conv_output])
+        gradient_function_conv = K.function([self.input_model.input], [conv_output])
+        grads_val = gradient_function_grads([preprocessed_input])
+        output = gradient_function_conv([preprocessed_input])
+
+        self.A = output[0][0]
+        self.grads_val =  grads_val[0][0]
+
+        gradient_function_grads_2 = K.function([self.input_model.input], [grads_wrt_input_output])
+        gradient_function_conv_2 = K.function([self.input_model.input], [conv_output])
+        grads_val_2 = gradient_function_grads_2([preprocessed_input])
+
+        output_2 = gradient_function_conv_2([preprocessed_input])
+        #self.A, self.grads_val = output_2[0, :], grads_val_2[0, :, :, :]
 
         return self.A, self.grads_val
 
     def gradientWeights(self):
-        """Defines a matrix of alpha^k_c. Each alpha^k_c denotes importance (weights) of a feature map A^k for class c.
-        If abs_w=True, absolute values of the matrix are processed and returned as weights.
-        If posit_w=True, ReLU is applied to the matrix."""
-        self.alpha_c = np.mean(self.grads_val, axis=(0, 1))
-        if self.abs_w:
-            self.alpha_c = abs(self.alpha_c)
-        if self.posit_w:
-            self.alpha_c = np.maximum(self.alpha_c, 0)
+        """Defines a matrix of alpha(i,j,k)_c. Each alpha(i,j,k)_c denotes importance of a pixel of a certain
+        feature map A(i,j,k) for class c. The possibility of applying abs() (abs_w=True) or
+        ReLU() (posit_w=True) to the values of the matrix is now covered in activationMap()function."""
+        self.alpha_c = self.grads_val
+
+        #Por si quiero anotar estadísticas sobre cuántos píxeles contribuyen positivamente, cuántos negativamente
+        #y cuántos no contribuyen.
+
+        #self.alpha_neg = self.alpha_c[:, :, :] < 0
+        #print("Número de píxeles que contribuyen negativamente:", np.sum(self.alpha_neg))
+        #self.alpha_pos = self.alpha_c[:, :, :] > 0
+        #print("Número de píxeles que contribuyen positivamente:", np.sum(self.alpha_pos))
+        #self.alpha_zero = self.alpha_c[:, :, :] == 0
+        #print("Número de píxeles que no contribuyen:", np.sum(self.alpha_zero))
 
         return self.alpha_c
 
     def activationMap(self):
-        """The last step to get the activation map. Should be called after outputGradients and gradientWeights."""
-        # weighted sum of feature maps: sum of alpha^k_c * A^k
-        cam = np.dot(self.A, self.alpha_c)  # *abs(grads_val) or max(grads_val,0)
+        """The last step to get the activation map. Should be called after outputGradients and gradientWeights.
+        If abs_w=True, absolute values of the matrix are processed and returned as weights.
+        If posit_w=True, ReLU is applied to the matrix."""
+        # weighted sum of feature maps: sum of alpha(i,j,k)_c * A(i,j,k)
+
+        print("\nINFO:")
+
+        if self.abs_w:
+            print("Has cambiado el signo de las derivadas negativas")
+            self.alpha_c = abs(self.alpha_c)
+        if self.posit_w:
+            print("Solo incluyes derivadas no negativas")
+            self.alpha_c = np.maximum(self.alpha_c, 0)
+
+        cam = np.multiply(self.A, self.alpha_c)
+        cam = np.sum(cam, axis=-1)
+
+        #np.multiply(self.A, self.alpha_c) / np.sum(np.multiply(self.A, self.alpha_c), axis=-1)
+
         img_dim = self.image.shape[:2]
+        #Este es un paso muy importante y bastante controvertido. Consiste en determinar cómo
+        #pasar de la resolución que tiene el cam a la resolución que tiene la imagen de entrada.
+        #Por defecto, se hace uso de una interpolación bilineal espacial aunque sabemos que eso
+        #no es estrictamente correcto, ya que el receptive field (efectivo o no) no coincide con
+        #la disminución del tamaño a consecuencia de las operaciones de pooling. Algunas personas
+        #han propuesto utilizar un upsampling Gaussiano aunque yo tampoco veo que el effective
+        #receptive field tenga esa forma siempre.
         cam = cv2.resize(cam, img_dim[::-1], cv2.INTER_LINEAR)
-        # apply ReLU to te sum
-        cam = np.maximum(cam, 0)
+
+        #Esto es una manera de mejorar la visualización de los datos sin alterar artificialmente el
+        #resultados de los mismos. Me deshago de los valores más pequeños y más grandes (outliers)
+        #para que el contraste sea mayor.
+        cam = np.minimum(cam, np.percentile(cam, 99.9))
+        cam = np.maximum(cam, np.percentile(cam, 0.1))
+
         # normalize non-negative weighted sum
-        self.cam_max = cam.max()
+        self.cam_max = np.max(np.abs(cam))
         if self.cam_max != 0 and self.normalize:
+            print("Has dividido el CAM por el máximo del valor absoluto. No has realizado una normalización sino un cambio de escala. El 0 anterior sigue siendo un 0 ahora.")
             cam = cam / self.cam_max
         self.cam = cam
 
