@@ -4,7 +4,62 @@ from keras import backend as K
 from skimage import measure
 import matplotlib.pyplot as plt
 from operator import sub
+import math
 
+from matplotlib.colors import LinearSegmentedColormap
+import matplotlib.patches as patches
+
+def encontrar_contorno(matriz):
+    # Encuentra las coordenadas (índices) de los 1s en la matriz
+    coordenadas_1 = [(i, j) for i, fila in enumerate(matriz) for j, valor in enumerate(fila) if valor == 1]
+
+    if not coordenadas_1:
+        # Si no hay ningún 1, devuelve None
+        return None
+
+    # Obtiene las coordenadas mínimas y máximas para formar el contorno del cuadrado
+    min_fila, min_columna = min(coordenadas_1, key=lambda x: x[0])[0], min(coordenadas_1, key=lambda x: x[1])[1]
+    max_fila, max_columna = max(coordenadas_1, key=lambda x: x[0])[0], max(coordenadas_1, key=lambda x: x[1])[1]
+
+    # Calcula el ancho y alto del cuadrado
+    ancho = max_columna - min_columna + 1
+    alto = max_fila - min_fila + 1
+
+    # Devuelve las variables necesarias para patches.Rectangle
+    return min_columna - 0.5, min_fila - 0.5, ancho, alto
+
+def encontrar_contorno_circulo(matriz):
+    # Encuentra las coordenadas (índices) de los 1s en la matriz
+    coordenadas_1 = [(i, j) for i, fila in enumerate(matriz) for j, valor in enumerate(fila) if valor == 1]
+
+    if not coordenadas_1:
+        # Si no hay ningún 1, devuelve None
+        return None
+
+    # Obtiene las coordenadas mínimas y máximas para formar el contorno del círculo
+    min_fila, min_columna = min(coordenadas_1, key=lambda x: x[0])[0], min(coordenadas_1, key=lambda x: x[1])[1]
+    max_fila, max_columna = max(coordenadas_1, key=lambda x: x[0])[0], max(coordenadas_1, key=lambda x: x[1])[1]
+
+    # Calcula el centro y el radio del círculo
+    centro_x = (min_columna + max_columna) / 2
+    centro_y = (min_fila + max_fila) / 2
+    radio = max(max_columna - min_columna, max_fila - min_fila) / 2
+
+    # Devuelve las variables necesarias para patches.Circle
+    return centro_x, centro_y, radio
+
+def make_grayscale_colormap():
+    # Define the colors for the negative, zero, and positive values
+    c_neg = 'black'
+    c_pos = 'white'
+
+    # Create a list of tuples containing the position and color for each segment
+    colors = [(0, c_neg), (0.5, 'gray'), (1, c_pos)]
+
+    # Create the colormap using LinearSegmentedColormap
+    cmap = LinearSegmentedColormap.from_list('grayscale_cmap', colors)
+
+    return cmap
 
 class SuperRoI:  # or rename it to ClassRoI
     def __init__(self, image =None):
@@ -122,9 +177,9 @@ class SegGradCAM:
     or an individual pixel for semantic segmentation.
     """
 
-    def __init__(self, input_model, image, cls=-1, prop_to_layer='activation_9', prop_from_layer='last',
+    def __init__(self, input_model, image, cls=-1, prop_to_layer='activation_9', prop_from_layer='last', image_id = None,
                  roi=SuperRoI(),  # 1, #default: explain all the pixels that belong to cls
-                 normalize=True, abs_w=False, posit_w=False):
+                 normalize=True, abs_w=False, posit_w=False, erf_output_irt_input=False, erf_conv_irt_input=False):
 
         self.input_model = input_model
         self.image = image
@@ -138,11 +193,15 @@ class SegGradCAM:
         else:
             self.prop_from_layer = prop_from_layer
         self.prop_to_layer = prop_to_layer  # an intermediate layer, typically of the bottleneck layers
+        self.image_id = image_id
 
         self.roi = roi  # M, a set of pixel indices of interest in the output mask.
         self.normalize = normalize  # [True, False] normalize the saliency map L_c
         self.abs_w = abs_w  # if True, absolute function is applied to alpha_c
         self.posit_w = posit_w  # if True, ReLU is applied to alpha_c
+
+        self.erf_output_irt_input = erf_output_irt_input #Cálculo del erf de la salida con respecto de la entrada
+        self.erf_conv_irt_input = erf_conv_irt_input #Cálculo del erf de una convolución respecto de la entrada
 
         self.alpha_c = None  # alpha_c, weights for importance of feature maps
         self.A = None  # A, feature maps from the intermediate prop_to_layer
@@ -168,21 +227,19 @@ class SegGradCAM:
         #print("conv_output: ", type(conv_output), np.array(conv_output))
         input_output = self.input_model.get_layer("input_1").output
 
-        #Calcula el gradiente de la salida (solo para los píxeles seleccionados) con
-        #respecto a la salida de una convolución (conv_output) o con respecto a la
-        #entrada (input_output)
+        #Se pueden calcular tres gradientes distintos:
+        #1.- Gradiente de la salida con respecto a una capa de convolución concreta (grads_irt_conv_output): esto es lo que se usa en el SegGradCAM
+        #2.- Gradiente de la salida con respecto de la entrada (grads_irt_input_output): esto es por definición el effective receptive field.
+        #3.- Gradiente de una capa de convolución con respecto a la entrada (): esto nos permite ver cómo evoluciona el erf a lo largo de la red neuronal.
+        #IMPORTANTE: Para los casos 2 y 3 lo recomendable es fijarse solo en un píxel de la salida y enmascarar el resto. Como estos cálculos no tienen nada
+        #que ver con el del SegGradCAM sería mejor moverlos a otra parte.
 
-        grads_wrt_conv_output = K.gradients(y_c, conv_output)[0]
-        #print("grads: ", type(grads_wrt_conv_output), grads_wrt_conv_output)
-        grads_wrt_input_output = K.gradients(y_c, input_output)[0]
-
-        #El gradiente con respecto a la entrada es lo que se conoce precisamente como
-        #effective receptive field. Para hacer un promedio es mejor seleccionar una
-        #posición fija de la imagen (un píxel), calcular el gradiente y almacenarlo.
 
         # Normalize if necessary
         # grads = normalize(grads)
-        gradient_function_grads = K.function([self.input_model.input], [grads_wrt_conv_output])
+        # Gradiente 1: salida del modelo respecto de capa de convolución concreta.
+        grads_irt_conv_output = K.gradients(y_c, conv_output)[0]
+        gradient_function_grads = K.function([self.input_model.input], [grads_irt_conv_output])
         gradient_function_conv = K.function([self.input_model.input], [conv_output])
         grads_val = gradient_function_grads([preprocessed_input])
         output = gradient_function_conv([preprocessed_input])
@@ -190,12 +247,106 @@ class SegGradCAM:
         self.A = output[0][0]
         self.grads_val =  grads_val[0][0]
 
-        gradient_function_grads_2 = K.function([self.input_model.input], [grads_wrt_input_output])
-        gradient_function_conv_2 = K.function([self.input_model.input], [conv_output])
-        grads_val_2 = gradient_function_grads_2([preprocessed_input])
 
-        output_2 = gradient_function_conv_2([preprocessed_input])
-        #self.A, self.grads_val = output_2[0, :], grads_val_2[0, :, :, :]
+        if self.erf_output_irt_input:
+            # Gradiente 2: salida del modelo respecto de la entrada.
+            grads_irt_input_output = K.gradients(y_c, input_output)[0]
+            gradient_function_grads_2 = K.function([self.input_model.input], [grads_irt_input_output])
+            grads_val_2 = gradient_function_grads_2([preprocessed_input])
+            erf2 = np.sum(np.array(grads_val_2)[0, 0, :, :, :], axis=-1)
+
+            fig, ax = plt.subplots(figsize=(10 * 2, 5 * 2))
+            plt.imshow(erf2, cmap=make_grayscale_colormap(), alpha = 1)
+            plt.colorbar()
+            plt.savefig("/workspace/Vitis-AI/tutorials/SegGradCAM/erf" + "_img_" + self.image_id + ".png")
+
+        if self.erf_conv_irt_input:
+            # Gradiente 3: salida de una capa de convolución respecto de la entrada.
+            # Dependiendo de la capa de convolución en la que me encuentre, el tamaño del feature map será uno u otro por lo
+            # que voy a elegir siempre la misma posición en la salida el centro del feature map.
+            # Por definición de la U-Net todos los feature maps (salvo, como mucho, los de la base) son de dimensiones pares
+            # por lo que no hay un centro estrictamente hablando sino 4 píxeles. Con la siguiente fórmula, hacemos que para
+            # la base (impar) se escoja el centro y para los pares el píxel inferior derecho del cuadrado de 4 píxeles centrales.
+            # (7, 13) -> mask_x = 3, mask_y = 6 como en Python se empieza en 0 conv_output[3, 6] es el centro.
+            # (14, 26) --> mask_x = 7, mask_y = 13. Si el píxel superior izquierdo es el [0, 0] y el inferior derecho es el [13, 25],
+            # el [7, 13] es el inferior derecho de los 4 que conforman el centro ([6, 12], [6, 13], [7, 12], [7, 13]).
+
+            mask_x = math.floor(conv_output.shape[1]/2)
+            mask_y = math.floor(conv_output.shape[2]/2)
+
+            forma = (1, conv_output.shape[1], conv_output.shape[2], conv_output.shape[3])
+            mask = np.zeros(forma)
+            mask[:, mask_x, mask_y, :] = 1
+            conv_output_mask = conv_output * mask
+
+            grads_conv_output_irt_input_output = K.gradients(conv_output_mask, input_output)[0]
+            gradient_function_grads_3 = K.function([self.input_model.input], [grads_conv_output_irt_input_output])
+            grads_val_3 = gradient_function_grads_3([preprocessed_input])
+            erf3 = np.sum(np.array(grads_val_3)[0, 0, :, :, :], axis=-1)
+
+            #Quiero calcular el effective receptive field que se define como la región de la entrada que condiciona el valor de salida de un píxel.
+            #Para ello, lo que hago es convertir todos los valores no nulos del erf3 en 1s. De esa manera tengo una matriz de 0s y 1s y lo que
+            #hago es hallar el rectángulo que contenga a esos 1s (evidentemente el que mejor se ajusta).
+
+            # Define the radius of the circle
+            binarized_erf3 = erf3.copy()
+            binarized_erf3[binarized_erf3 != 0] = 1
+            variables_circulo = encontrar_contorno_circulo(binarized_erf3)
+            variables_rectangulo = encontrar_contorno(binarized_erf3)
+
+            info = np.zeros((2, 3))
+            info[0, 0] = variables_circulo[0]
+            info[0, 1] = variables_circulo[1]
+            info[0, 2] = variables_circulo[2]
+
+            #Como el rectángulo no cambia de imagen a imagen defino el inner dynamic receptive field como el círculo que incluye los puntos que aportan un 25% del máximo del gradiente.
+            #No he puesto la restricción de que el círculo tenga que estar centrado en el cuadrado anterior.
+
+            selective_erf3 = erf3.copy()
+            selective_erf3 = abs(erf3)
+            selective_erf3 = selective_erf3 / np.max(selective_erf3)
+            selective_erf3[selective_erf3 <= 0.25] = 0
+            selective_erf3[selective_erf3 > 0.25] = 1
+            selective_variables = encontrar_contorno_circulo(abs(selective_erf3))
+
+            info[1, 0] = selective_variables[0] #Si centrado --> variables_circulo[0]
+            info[1, 1] = selective_variables[1] #Si centrado --> variables_circulo[1]
+            info[1, 2] = selective_variables[2] #Si centrado --> selective_variables[2] + np.ceil(np.sqrt( (variables_circulo[0] - selective_variables[0])**2 + (variables_circulo[1] - selective_variables[1])**2 ))
+
+            circle = patches.Circle((selective_variables[0], selective_variables[1]), selective_variables[2], linewidth=1, edgecolor='blue', facecolor='none')
+            circle2 = patches.Circle((selective_variables[0], selective_variables[1]), selective_variables[2], linewidth=1, edgecolor='blue', facecolor='none')
+            rectangle = patches.Rectangle((variables_rectangulo[0], variables_rectangulo[1]), variables_rectangulo[2], variables_rectangulo[3], linewidth=1, edgecolor='green', facecolor='none')
+            rectangle2 = patches.Rectangle((variables_rectangulo[0], variables_rectangulo[1]), variables_rectangulo[2], variables_rectangulo[3], linewidth=1, edgecolor='green', facecolor='none')
+
+            fig, ax = plt.subplots(figsize=(10 * 2, 5 * 2))
+            plt.imshow(erf3 / np.max(abs(erf3)), cmap=make_grayscale_colormap(), alpha = 1)
+            plt.colorbar()
+            plt.gca().add_patch(circle)
+            plt.gca().add_patch(rectangle)
+            plt.show()
+            plt.clim([-1, 1])
+            plt.savefig("/workspace/Vitis-AI/tutorials/SegGradCAM/" + self.prop_to_layer + "_erf_" + str(mask_x).zfill(2) + "_" + str(mask_y).zfill(2) + "_img_" + self.image_id + ".png")
+            np.save("/workspace/Vitis-AI/tutorials/SegGradCAM/" + self.prop_to_layer + "_erf_" + str(mask_x).zfill(2) + "_" + str(mask_y).zfill(2) + "_img_" + self.image_id + ".npy", erf3)
+            plt.close(fig)
+
+            #En esta segunda me quedo con el valor absoluto por si eso hiciera que la Gaussiana cobrase algo más de valor.
+            fig, ax = plt.subplots(figsize=(10 * 2, 5 * 2))
+            plt.imshow(abs(erf3) / np.max(abs(erf3)), cmap=make_grayscale_colormap(), alpha = 1)
+            plt.colorbar()
+            plt.gca().add_patch(circle2)
+            plt.gca().add_patch(rectangle2)
+            plt.show()
+            plt.clim([0, 1])
+            plt.savefig("/workspace/Vitis-AI/tutorials/SegGradCAM/" + self.prop_to_layer + "_abs_erf_" + str(mask_x).zfill(2) + "_" + str(mask_y).zfill(2) + "_img_" + self.image_id + ".png")
+            np.save("/workspace/Vitis-AI/tutorials/SegGradCAM/" + self.prop_to_layer + "_abs_erf_" + str(mask_x).zfill(2) + "_" + str(mask_y).zfill(2) + "_img_" + self.image_id + ".npy", abs(erf3))
+
+            # #Analizando las imágenes para el encoder de la U-Net (a menor profundidad de la capa más evidente es el efecto) se ve que el círculo se ajusta bastante bien a las zonas que abarcan el
+            #mayor cambio (no es ni de lejos una Gaussiana pero las zonas centrales tienden a aportar más). Sin embargo, a medida que profundizamos en la red y, sobre todo, en la zona del decoder
+            #el radio deja de ajustarse a la zona de mayor cambio. Por tanto, hemos hallado otro radio para un erf selectivo que se define como la zona en la cual está incluida la aportación
+            #de 1/4 del máximo del valor absoluto (pudiera darse el caso de que algún píxel con mayor aportación se encontrase fuera de ese círculo).
+
+
+            np.save("/workspace/Vitis-AI/tutorials/SegGradCAM/" + self.prop_to_layer + "_erf_info" + "_img_" + self.image_id + ".npy", info)
 
         return self.A, self.grads_val
 
